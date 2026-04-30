@@ -1,6 +1,6 @@
 # ESP32 UDP Engine
 
-A UDP traffic generator built on ESP32U WROOM, with an external atenna, that pushes WiFi transmission to saturation to analyze throughput, latency distributions, packet loss, and jitter under real-world network contention.
+A UDP traffic generator built on a ESP32U WROOM (has an external atenna) that pushes WiFi transmission to saturation to analyze throughput, latency distributions, packet loss, and jitter under real-world network contention.
 
 ## How to use example
 
