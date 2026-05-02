@@ -5,9 +5,13 @@
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <mutex>
 #include <optional>
+#include <string>
 #include <thread>
 #include <vector>
+#include <fcntl.h>
+#include <unistd.h>
 
 #define STARTNUM 1
 
@@ -54,28 +58,119 @@ private:
     }
 };
 
-// has its own thread 
-class PacketProcessing {
-public:
-    inline static std::deque<UdpPacket> packets;
+// has its own thread
+class PacketLogging {
+public: 
+    inline static std::vector<char> loggingBuffer;
+    inline static int fd = -1; 
 
-    static void init(std::atomic<bool>& processingRunning, std::atomic<bool>& serverRunning) {
-        while (processingRunning.load() || serverRunning.load() || !packets.empty()) {
+    static void pushPacket(const UdpPacket& packet) {
+        std::lock_guard<std::mutex> lock(loggingQueueMutex);
+        loggingQueue.push_back(packet);
+    }
+
+    static int init(){
+        fd = open("udp_log.csv", O_CREAT | O_WRONLY | O_TRUNC, 0644);
+        if (fd < 0) {
+            return -1; 
+        }
+
+        loggingBuffer.reserve(1024 * 1024);
+        const std::string header = "hostPacketId,hostReceivedTimestampNS,ESPpacketId,ESPsentTimestampNS\n";
+        loggingBuffer.insert(loggingBuffer.end(), header.begin(), header.end());
+        return 0; 
+    }
+
+    static void closeLogging(){
+        if (!loggingBuffer.empty()){ 
+            write(fd,loggingBuffer.data(),loggingBuffer.size());
+        }
+        if (fd >= 0) {
+            close(fd);
+            fd = -1;
+        }
+    }
+
+    static void packetLogging(std::atomic<bool>& loggingRunning){
+        while (loggingRunning.load() || !isQueueEmpty()) {
             std::optional<UdpPacket> packet = popPacket();
 
             if (!packet.has_value()) {
                 std::this_thread::sleep_for(std::chrono::microseconds(1));
+                continue;
+            }
+
+            appendPacket(*packet);
+
+            if (loggingBuffer.size() >= 1024 * 1024) {
+                write(fd, loggingBuffer.data(), loggingBuffer.size());
+                loggingBuffer.clear();
             }
         }
     }
 
+private:
+    inline static std::deque<UdpPacket> loggingQueue;
+    inline static std::mutex loggingQueueMutex;
+
+    static bool isQueueEmpty() {
+        std::lock_guard<std::mutex> lock(loggingQueueMutex);
+        return loggingQueue.empty();
+    }
+
     static std::optional<UdpPacket> popPacket() {
-        if (packets.empty()) {
+        std::lock_guard<std::mutex> lock(loggingQueueMutex);
+
+        if (loggingQueue.empty()) {
             return std::nullopt;
         }
 
-        UdpPacket packet = packets.front();
-        packets.pop_front();
+        UdpPacket packet = loggingQueue.front();
+        loggingQueue.pop_front();
+        return packet;
+    }
+
+    static void appendPacket(const UdpPacket& packet) {
+        const std::string row =
+            std::to_string(packet.hostPacketId) + "," +
+            std::to_string(packet.hostReceivedTimestampNS) + "," +
+            std::to_string(packet.ESPpacketId) + "," +
+            std::to_string(packet.ESPsentTimestampNS) + "\n";
+
+        loggingBuffer.insert(loggingBuffer.end(), row.begin(), row.end());
+    }
+};
+
+// has its own thread 
+class PacketProcessing {
+public:
+    static void pushPacket(const UdpPacket& packet) {
+        std::lock_guard<std::mutex> lock(packetProcessingQueueMutex);
+        packetProcessingQueue.push_back(packet);
+    }
+
+    static void init(std::atomic<bool>& processingRunning, std::atomic<bool>& serverRunning) {
+        while (processingRunning.load() || serverRunning.load() || !isQueueEmpty()) {
+            std::optional<UdpPacket> packet = popPacket();
+
+            if (!packet.has_value()) {
+                std::this_thread::sleep_for(std::chrono::microseconds(1));
+                continue;
+            }
+
+            PacketLogging::pushPacket(*packet);
+        }
+    }
+
+    static std::optional<UdpPacket> popPacket() {
+        std::lock_guard<std::mutex> lock(packetProcessingQueueMutex);
+
+        if (packetProcessingQueue.empty()) {
+            return std::nullopt;
+        }
+
+        UdpPacket packet = packetProcessingQueue.front();
+        packetProcessingQueue.pop_front();
         parsePacket(packet);
 
         return packet;
@@ -83,9 +178,10 @@ public:
 
     static bool parsePacket(UdpPacket& packet) {
         if (packet.rawPayload.size() < UDP_PAYLOAD_SIZE) {
-            return false;
+            packet.ESPpacketId = 0;
+            packet.ESPsentTimestampNS = 0; 
+            return true;
         }
-
         // little endian 
         packet.ESPpacketId =
             static_cast<uint32_t>(packet.rawPayload[0]) |
@@ -107,16 +203,12 @@ public:
     }
 
 private:
+    inline static std::deque<UdpPacket> packetProcessingQueue;
+    inline static std::mutex packetProcessingQueueMutex;
     static constexpr size_t UDP_PAYLOAD_SIZE = sizeof(uint32_t) + sizeof(uint64_t);
+
+    static bool isQueueEmpty() {
+        std::lock_guard<std::mutex> lock(packetProcessingQueueMutex);
+        return packetProcessingQueue.empty();
+    }
 };
-
-
-// has its own thread so it can write to a file
-// class PacketLoggin {
-// public: 
-
-
-// private:
-
-
-// };

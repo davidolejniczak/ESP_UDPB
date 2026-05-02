@@ -10,8 +10,6 @@
 #include <arpa/inet.h> 
 #include <unistd.h>
 
-#include "packetProcessing.cpp"
-
 #define MAXBUFF 1024
 #define PORT 8010
 
@@ -23,6 +21,7 @@ class server {
             int sockfd; 
             char buffer[MAXBUFF];
             timeval timeout; 
+            timeout.tv_usec = 0;
             timeout.tv_sec = 5;
 
             if ((sockfd = socket(AF_INET, SOCK_DGRAM,0)) < 0) {
@@ -74,10 +73,10 @@ class server {
     
         private: 
             void storePacket(const char* buffer, ssize_t bytesReceived) {
-                PacketProcessing::packets.push_back(UdpPacket::capture(buffer, static_cast<size_t>(bytesReceived)));
+                PacketProcessing::pushPacket(UdpPacket::capture(buffer, static_cast<size_t>(bytesReceived)));
             }
 
             void storeError(){
-                PacketProcessing::packets.push_back(UdpPacket());
+                PacketProcessing::pushPacket(UdpPacket());
             }
 };
